@@ -11435,7 +11435,18 @@ dependencies = [
  "bytemuck",
  "slint",
  "slint-build",
+ "web-time",
  "wgpu 27.0.1",
+]
+
+[[package]]
+name = "wgpu_underlay"
+version = "1.14.1"
+dependencies = [
+ "bytemuck",
+ "slint",
+ "slint-build",
+ "web-time",
 ]
 
 [[package]]

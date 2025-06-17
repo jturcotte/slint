@@ -29,6 +29,7 @@ pub struct WGPUSurface {
     queue: wgpu::Queue,
     surface_config: RefCell<wgpu::SurfaceConfiguration>,
     surface: wgpu::Surface<'static>,
+    surface_texture: RefCell<Option<wgpu::SurfaceTexture>>,
     textures_to_transition_for_sampling: RefCell<Vec<wgpu::Texture>>,
     backend: Backend,
 }
@@ -81,6 +82,7 @@ impl super::Surface for WGPUSurface {
             queue,
             surface_config: surface_config.into(),
             surface,
+            surface_texture: RefCell::new(None),
             textures_to_transition_for_sampling: RefCell::new(Vec::new()),
             backend,
         })
@@ -122,10 +124,19 @@ impl super::Surface for WGPUSurface {
     ) -> Result<(), PlatformError> {
         let gr_context = &mut self.gr_context.borrow_mut();
 
-        let frame =
-            self.surface.get_current_texture().expect("unable to get next texture from swapchain");
+        assert!(self.surface_texture.borrow().is_none());
+        *self.surface_texture.borrow_mut() = Some(
+            self.surface.get_current_texture().expect("unable to get next texture from swapchain"),
+        );
 
-        let skia_surface = self.backend.make_surface(size, gr_context, &frame);
+        let skia_surface = self.backend.make_surface(
+            size,
+            gr_context,
+            self.surface_texture
+                .borrow()
+                .as_ref()
+                .expect("prepare_surface_texture must be called before render"),
+        );
 
         let mut skia_surface = skia_surface
             .ok_or_else(|| PlatformError::from("Failed to create Skia surface from WGPU"))?;
@@ -155,7 +166,7 @@ impl super::Surface for WGPUSurface {
             pre_present_callback();
         }
 
-        frame.present();
+        self.surface_texture.take().unwrap().present();
 
         Ok(())
     }
@@ -175,6 +186,8 @@ impl super::Surface for WGPUSurface {
             self.instance.clone(),
             self.device.clone(),
             self.queue.clone(),
+            self.surface_texture.borrow().as_ref().map(|st| st.texture.clone()),
+            Some(self.surface_config.borrow().clone()),
         );
         callback(api)
     }

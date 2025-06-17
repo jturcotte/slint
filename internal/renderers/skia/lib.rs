@@ -743,9 +743,11 @@ impl SkiaRenderer {
             if let Some(callback) = self.rendering_notifier.borrow_mut().as_mut() {
                 // For the BeforeRendering rendering notifier callback it's important that this happens *after* clearing
                 // the back buffer, in order to allow the callback to provide its own rendering of the background.
-                // Skia's clear() will merely schedule a clear call, so flush right away to make it immediate.
+                // Skia's clear() will merely schedule a clear call, so flush right away to make it immediate to Skia's queue
+                // and then submit to the GPU.
                 if let Some(ctx) = gr_context.as_mut() {
                     ctx.flush(None);
+                    ctx.submit(None);
                 }
 
                 if let Some(surface) = surface {

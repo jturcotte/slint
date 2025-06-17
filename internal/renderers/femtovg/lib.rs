@@ -51,6 +51,7 @@ pub trait GraphicsBackend {
     type Renderer: femtovg::Renderer + TextureImporter;
     type WindowSurface: WindowSurface<Self::Renderer>;
     const NAME: &'static str;
+    const FILL_BACKGROUND_BEFORE_RENDERING: bool = false;
     fn new_suspended() -> Self;
     fn clear_graphics_context(&self);
     fn begin_surface_rendering(
@@ -63,6 +64,7 @@ pub trait GraphicsBackend {
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
     fn with_graphics_api<R>(
         &self,
+        surface: Option<&Self::WindowSurface>,
         callback: impl FnOnce(Option<i_slint_core::api::GraphicsAPI<'_>>) -> R,
     ) -> Result<R, i_slint_core::platform::PlatformError>;
     /// This function is called by the renderers when the surface needs to be resized, typically
@@ -116,7 +118,7 @@ impl<B: GraphicsBackend> FemtoVGRenderer<B> {
             );
 
             if let Some(callback) = self.rendering_notifier.borrow_mut().as_mut() {
-                self.with_graphics_api(|api| {
+                self.with_graphics_api(None, |api| {
                     callback.notify(RenderingState::RenderingSetup, &api)
                 })?;
             }
@@ -155,7 +157,10 @@ impl<B: GraphicsBackend> FemtoVGRenderer<B> {
                     // dpi / device pixel ratio as the anti-alias of femtovg needs that to draw text clearly.
                     // We need to care about that `ceil()` when calculating metrics.
                     femtovg_canvas.set_size(surface_size.width, surface_size.height, scale);
+                }
 
+                if B::FILL_BACKGROUND_BEFORE_RENDERING {
+                    let mut femtovg_canvas = canvas.borrow_mut();
                     // Clear with window background if it is a solid color otherwise it will drawn as gradient
                     if let Some(Brush::SolidColor(clear_color)) = window_background_brush {
                         femtovg_canvas.clear_rect(
@@ -166,13 +171,6 @@ impl<B: GraphicsBackend> FemtoVGRenderer<B> {
                             self::itemrenderer::to_femtovg_color(&clear_color),
                         );
                     }
-                }
-
-                {
-                    let mut femtovg_canvas = canvas.borrow_mut();
-                    femtovg_canvas.reset();
-                    femtovg_canvas.rotate(rotation_angle_degrees.to_radians());
-                    femtovg_canvas.translate(translation.0, translation.1);
                 }
 
                 if let Some(notifier_fn) = self.rendering_notifier.borrow_mut().as_mut() {
@@ -187,9 +185,16 @@ impl<B: GraphicsBackend> FemtoVGRenderer<B> {
                     femtovg_canvas.set_size(width.get(), height.get(), scale);
                     drop(femtovg_canvas);
 
-                    self.with_graphics_api(|api| {
+                    self.with_graphics_api(Some(&surface), |api| {
                         notifier_fn.notify(RenderingState::BeforeRendering, &api)
                     })?;
+                }
+
+                {
+                    let mut femtovg_canvas = canvas.borrow_mut();
+                    femtovg_canvas.reset();
+                    femtovg_canvas.rotate(rotation_angle_degrees.to_radians());
+                    femtovg_canvas.translate(translation.0, translation.1);
                 }
 
                 self.graphics_cache.clear_cache_if_scale_factor_changed(window);
@@ -207,8 +212,19 @@ impl<B: GraphicsBackend> FemtoVGRenderer<B> {
                     let window_item =
                         window_item_rc.downcast::<i_slint_core::items::WindowItem>().unwrap();
                     match window_item.as_pin_ref().background() {
-                        Brush::SolidColor(..) => {
-                            // clear_rect is called earlier
+                        Brush::SolidColor(clear_color) => {
+                            if !B::FILL_BACKGROUND_BEFORE_RENDERING && 
+                            // FIXME: this may not be correct if there's no before-rendering handler and the user *wants* to fill the back buffer with transparent
+                            !clear_color.alpha() == 0
+                             {
+                                canvas.borrow_mut().clear_rect(
+                                    0,
+                                    0,
+                                    surface_size.width,
+                                    surface_size.height,
+                                    self::itemrenderer::to_femtovg_color(&clear_color),
+                                );
+                            }
                         }
                         _ => {
                             // Draws the window background as gradient
@@ -256,7 +272,9 @@ impl<B: GraphicsBackend> FemtoVGRenderer<B> {
             .unwrap_or(Ok(()))?;
 
         if let Some(callback) = self.rendering_notifier.borrow_mut().as_mut() {
-            self.with_graphics_api(|api| callback.notify(RenderingState::AfterRendering, &api))?;
+            self.with_graphics_api(Some(&surface), |api| {
+                callback.notify(RenderingState::AfterRendering, &api)
+            })?;
         }
 
         self.graphics_backend.present_surface(surface)?;
@@ -265,9 +283,10 @@ impl<B: GraphicsBackend> FemtoVGRenderer<B> {
 
     fn with_graphics_api(
         &self,
+        surface: Option<&B::WindowSurface>,
         callback: impl FnOnce(i_slint_core::api::GraphicsAPI<'_>),
     ) -> Result<(), PlatformError> {
-        self.graphics_backend.with_graphics_api(|api| callback(api.unwrap()))
+        self.graphics_backend.with_graphics_api(surface, |api| callback(api.unwrap()))
     }
 
     fn window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
@@ -373,7 +392,7 @@ impl<B: GraphicsBackend> RendererSealed for FemtoVGRenderer<B> {
         _items: &mut dyn Iterator<Item = Pin<i_slint_core::items::ItemRef<'_>>>,
     ) -> Result<(), i_slint_core::platform::PlatformError> {
         if !self.graphics_cache.is_empty() {
-            self.graphics_backend.with_graphics_api(|_| {
+            self.graphics_backend.with_graphics_api(None, |_| {
                 self.graphics_cache.component_destroyed(component);
             })?;
         }
@@ -383,7 +402,7 @@ impl<B: GraphicsBackend> RendererSealed for FemtoVGRenderer<B> {
     fn set_window_adapter(&self, window_adapter: &Rc<dyn WindowAdapter>) {
         *self.maybe_window_adapter.borrow_mut() = Some(Rc::downgrade(window_adapter));
         self.graphics_backend
-            .with_graphics_api(|_| {
+            .with_graphics_api(None, |_| {
                 self.graphics_cache.clear_all();
                 self.texture_cache.borrow_mut().clear();
             })
@@ -399,7 +418,7 @@ impl<B: GraphicsBackend> RendererSealed for FemtoVGRenderer<B> {
 
     /// Returns an image buffer of what was rendered last by reading the previous front buffer (using glReadPixels).
     fn take_snapshot(&self) -> Result<SharedPixelBuffer<Rgba8Pixel>, PlatformError> {
-        self.graphics_backend.with_graphics_api(|_| {
+        self.graphics_backend.with_graphics_api(None, |_| {
             let Some(canvas) = self.canvas.borrow().as_ref().cloned() else {
                 return Err("FemtoVG renderer cannot take screenshot without a window".into());
             };
@@ -474,11 +493,11 @@ impl<B: GraphicsBackend> FemtoVGRendererExt for FemtoVGRenderer<B> {
 
     fn clear_graphics_context(&self) -> Result<(), i_slint_core::platform::PlatformError> {
         // Ensure the context is current before the renderer is destroyed
-        self.graphics_backend.with_graphics_api(|api| {
+        self.graphics_backend.with_graphics_api(None, |api| {
             // If we've rendered a frame before, then we need to invoke the RenderingTearDown notifier.
             if !self.rendering_first_time.get() && api.is_some() {
                 if let Some(callback) = self.rendering_notifier.borrow_mut().as_mut() {
-                    self.with_graphics_api(|api| {
+                    self.with_graphics_api(None, |api| {
                         callback.notify(RenderingState::RenderingTeardown, &api)
                     })
                     .ok();
