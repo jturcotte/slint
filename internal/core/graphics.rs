@@ -233,8 +233,16 @@ pub fn create_graphics_api_wgpu_26(
     instance: wgpu_26::wgpu::Instance,
     device: wgpu_26::wgpu::Device,
     queue: wgpu_26::wgpu::Queue,
+    surface_texture: Option<wgpu_26::wgpu::Texture>,
+    surface_configuration: Option<wgpu_26::wgpu::SurfaceConfiguration>,
 ) -> crate::api::GraphicsAPI<'static> {
-    crate::api::GraphicsAPI::WGPU26 { instance, device, queue }
+    crate::api::GraphicsAPI::WGPU26 {
+        instance,
+        device,
+        queue,
+        surface_texture,
+        surface_configuration,
+    }
 }
 
 /// Internal module for use by cbindgen and the C++ platform API layer.
