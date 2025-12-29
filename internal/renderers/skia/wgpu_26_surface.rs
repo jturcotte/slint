@@ -91,6 +91,10 @@ impl super::Surface for WGPUSurface {
     }
 
     fn resize_event(&self, size: PhysicalWindowSize) -> Result<(), PlatformError> {
+        if size.width == 0 || size.height == 0 {
+            return Ok(());
+        }
+
         {
             let gr_context = &mut self.gr_context.borrow_mut();
             // This is brute force, but for the lack of access to the fences this seems to work: Avoid any pending work so that
